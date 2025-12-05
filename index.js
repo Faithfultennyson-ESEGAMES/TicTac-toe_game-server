@@ -20,9 +20,15 @@ webhookDispatcher.init(); // Initialize the dispatcher and create DLQ directory
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CORS Configuration ---
+// When deploying, set CLIENT_ORIGIN to your game client's full URL.
+// For local development, it defaults to the 'game-client' folder.
+const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5500';
+
 const io = new Server(server, {
-  cors: { // In a real-world scenario, you'd want to lock this down
-    origin: "*",
+  cors: {
+    origin: clientOrigin,
     methods: ["GET", "POST"]
   }
 });
@@ -45,4 +51,5 @@ app.get('/', (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  console.log(`CORS: Allowing connections from origin: ${clientOrigin}`);
 });
