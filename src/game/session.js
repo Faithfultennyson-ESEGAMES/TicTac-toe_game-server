@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { dispatchEvent } = require('../webhooks/dispatcher');
 const { checkForWinner, isBoardFull } = require('./game_logic');
 const sessionLogger = require('../logging/session_logger');
+const { notifySessionClosed } = require('../webhooks/matchmaking_notifier');
 
 // --- Constants ---
 const sessions = new Map(); // sessionId -> session object
@@ -19,6 +20,9 @@ async function _concludeAndCleanupSession(session) {
     if (!session) return;
 
     await dispatchEvent('session.ended', session, session.sessionId);
+
+    // Notify the matchmaking service that the session is officially over.
+    await notifySessionClosed(session);
 
     for (const player of session.players) {
         if (player) {
@@ -124,7 +128,7 @@ function getAllActiveSessions() {
   return activeSessions;
 }
 
-async function addOrReconnectPlayer(sessionId, playerId, playerName, socketId) {
+async function addOrReconnectPlayer( sessionId, playerId, playerName, socketId) {
   const session = getSession(sessionId);
   if (!session) {
     return { success: false, error: 'Session not found.' };

@@ -23,4 +23,28 @@ function adminAuth(req, res, next) {
   next();
 }
 
-module.exports = { adminAuth };
+/**
+ * Middleware to protect the /start endpoint.
+ * It uses the same Bearer token mechanism as the admin endpoints.
+ */
+function startRequestAuth(req, res, next) {
+    if (!DLQ_PASSWORD) {
+        console.error('[Auth] /start endpoint security is not configured. Set DLQ_PASSWORD in .env');
+        return res.status(500).json({ error: 'Server security is not configured.' });
+    }
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized: Missing or invalid token format for /start endpoint.' });
+    }
+
+    const providedToken = authHeader.split(' ')[1];
+    if (providedToken !== DLQ_PASSWORD) {
+        return res.status(403).json({ error: 'Forbidden: Invalid token for /start endpoint.' });
+    }
+
+    next();
+}
+
+
+module.exports = { adminAuth, startRequestAuth };

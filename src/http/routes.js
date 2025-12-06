@@ -1,11 +1,19 @@
 const express = require('express');
+const crypto = require('crypto');
 const { createSession } = require('../game/session');
 const { dispatchEvent } = require('../webhooks/dispatcher');
 const sessionLogger = require('../logging/session_logger');
+const { startRequestAuth } = require('./middleware/auth');
 
 const router = express.Router();
+const HMAC_SECRET = process.env.HMAC_SECRET;
 
-router.post('/start', async (req, res) => {
+router.post('/start', startRequestAuth, async (req, res) => {
+  if (!HMAC_SECRET) {
+    console.error('[Auth] HMAC_SECRET is not configured. Cannot sign responses.');
+    return res.status(500).json({ error: 'Server security is not configured.' });
+  }
+
   let { turn_duration_sec } = req.body;
 
   if (turn_duration_sec !== undefined) {
@@ -17,18 +25,21 @@ router.post('/start', async (req, res) => {
 
   const session = createSession(turn_duration_sec);
 
-  // Start the session log. This also logs the 'session.started' event internally.
   sessionLogger.startSessionLog(session);
 
-  // Dispatch the session.started webhook (existing behavior)
   await dispatchEvent('session.started', session, session.sessionId);
 
   const join_url = `${req.protocol}://${req.get('host')}/session/${session.sessionId}/join`;
 
-  res.status(201).json({
+  const payload = {
     session_id: session.sessionId,
     join_url: join_url,
-  });
+  };
+
+  // Sign the payload
+  const signature = crypto.createHmac('sha256', HMAC_SECRET).update(JSON.stringify(payload)).digest('hex');
+
+  res.status(201).json({ ...payload, signature });
 });
 
 module.exports = router;
