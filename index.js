@@ -10,7 +10,6 @@ validateEnv();
 const sessionManager = require('./src/game/session'); // Import the session manager
 const httpRoutes = require('./src/http/routes');
 const adminDlqRoutes = require('./src/http/admin_dlq_routes');
-const adminSessionRoutes = require('./src/http/admin_session_routes');
 const adminServerRoutes = require('./src/http/admin_server_routes'); // Import the new server admin routes
 const { initializeSocket } = require('./src/game/socket_handler');
 const sessionLogger = require('./src/logging/session_logger');
@@ -44,7 +43,6 @@ app.use(express.json());
 // Mount routers
 app.use(httpRoutes);
 app.use('/admin', adminDlqRoutes);
-app.use('/admin', adminSessionRoutes);
 app.use('/admin', adminServerRoutes); // Mount the new server admin routes
 
 app.get('/', (req, res) => {
