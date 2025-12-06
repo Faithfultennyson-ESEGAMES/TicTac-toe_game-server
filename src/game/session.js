@@ -4,18 +4,22 @@ const { dispatchEvent } = require('../webhooks/dispatcher');
 const { checkForWinner, isBoardFull } = require('./game_logic');
 const sessionLogger = require('../logging/session_logger');
 
+// --- Constants ---
 const sessions = new Map(); // sessionId -> session object
 const activePlayerIds = new Map(); // playerId -> sessionId
 const sessionsBySocket = new Map(); // socketId -> sessionId
 
-// Private function for the final cleanup
+// Use environment variables for configuration with sane defaults
+const SESSION_MAX_LIFETIME_MS = parseInt(process.env.SESSION_MAX_LIFETIME_MS, 10) || 3600000; // Default 1 hour
+const SESSION_CLEANUP_INTERVAL_MS = 300000; // 5 minutes
+
+// --- Private Functions ---
+
 async function _concludeAndCleanupSession(session) {
     if (!session) return;
 
-    // Dispatch the webhook while the session data is still intact.
     await dispatchEvent('session.ended', session, session.sessionId);
 
-    // Clean up all global maps to prevent memory leaks and allow players to join new games.
     for (const player of session.players) {
         if (player) {
             activePlayerIds.delete(player.playerId);
@@ -25,37 +29,53 @@ async function _concludeAndCleanupSession(session) {
         }
     }
 
-    // Finally, remove the session from the main map.
     sessions.delete(session.sessionId);
 }
 
+async function _cleanupStaleSessions() {
+  const now = Date.now();
+  console.log('[Session] Running stale session cleanup...');
+
+  for (const session of sessions.values()) {
+    if (session.status === 'ended') {
+      continue;
+    }
+
+    const sessionAge = now - new Date(session.createdAt).getTime();
+
+    if (sessionAge > SESSION_MAX_LIFETIME_MS) {
+      console.log(`[Session] Stale session ${session.sessionId} (created at ${session.createdAt}, status: ${session.status}) found. Auto-ending.`);
+      await endSession(session.sessionId, 'stale', 'draw', null);
+    }
+  }
+}
+
+// --- Public API ---
+
+function init() {
+  setInterval(_cleanupStaleSessions, SESSION_CLEANUP_INTERVAL_MS);
+  console.log(`[Session] Stale session cleanup initiated. Will run every ${SESSION_CLEANUP_INTERVAL_MS / 60000} minutes.`);
+  console.log(`[Session] Sessions older than ${SESSION_MAX_LIFETIME_MS / 3600000} hour(s) will be terminated.`);
+}
 
 async function endSession(sessionId, clientReason, webhookWinState, winnerPlayerId) {
     const session = getSession(sessionId);
     if (!session || session.status === 'ended') {
-        return null; // Indicate that the session is already ended or not found
+        return null;
     }
 
-    // 1. Stop any pending turn timers immediately.
     clearTimeout(session.turnTimerId);
     session.turnTimerId = null;
 
-    // 2. Set the final state on the session object.
     session.status = 'ended';
     session.winState = webhookWinState;
     session.winnerPlayerId = winnerPlayerId;
 
-    // 3. Finalize the session log.
     sessionLogger.finalizeLog(session, { win_state: webhookWinState, winner_player_id: winnerPlayerId });
-
-    // 4. Asynchronously trigger the final webhook dispatch and cleanup.
-    // We don't wait for this to complete before notifying the client.
     _concludeAndCleanupSession(session);
 
-    // 5. Return the neutral payload for the client-facing 'game-ended' event.
     return { reason: clientReason, board: session.board };
 }
-
 
 function createSession(turnDurationSec = 10) {
   const sessionId = crypto.randomUUID();
@@ -68,9 +88,9 @@ function createSession(turnDurationSec = 10) {
     createdAt: new Date().toISOString(),
     currentTurnPlayerId: null,
     turnTimerId: null,
-    winState: null, // 'win' | 'draw' | 'none'
+    winState: null,
     winnerPlayerId: null,
-    turnCount: 0, // New field for MAX_TURNS rule
+    turnCount: 0,
   };
   sessions.set(sessionId, session);
   return session;
@@ -78,6 +98,30 @@ function createSession(turnDurationSec = 10) {
 
 function getSession(sessionId) {
   return sessions.get(sessionId);
+}
+
+function getAllActiveSessions() {
+  const activeSessions = [];
+  for (const session of sessions.values()) {
+    if (session.status !== 'ended') {
+      const sanitizedPlayers = session.players.map(p => ({
+        playerId: p.playerId,
+        playerName: p.playerName,
+        symbol: p.symbol,
+      }));
+
+      activeSessions.push({
+        sessionId: session.sessionId,
+        status: session.status,
+        createdAt: session.createdAt,
+        turnDurationSec: session.turnDurationSec,
+        turnCount: session.turnCount,
+        currentTurnPlayerId: session.currentTurnPlayerId,
+        players: sanitizedPlayers,
+      });
+    }
+  }
+  return activeSessions;
 }
 
 async function addOrReconnectPlayer(sessionId, playerId, playerName, socketId) {
@@ -175,7 +219,6 @@ async function handleDisconnect(socketId) {
   const player = session.players.find(p => p.socketId === socketId);
   if (!player) return null;
 
-  // Only remove the socketId mapping, do not remove the player from the session
   sessionsBySocket.delete(socketId);
   player.socketId = null;
 
@@ -204,8 +247,10 @@ async function passTurn(sessionId) {
 }
 
 module.exports = {
+  init,
   createSession,
   getSession,
+  getAllActiveSessions,
   addOrReconnectPlayer,
   makeMove,
   handleDisconnect,
