@@ -34,13 +34,13 @@ function initializeSocket(io) {
     const expiresAtISO = expiresAt.toISOString();
 
     sessionLogger.appendEvent(session.sessionId, 'turn.started', {
-      player_id: session.currentTurnPlayerId,
-      expires_at: expiresAtISO,
+      playerId: session.currentTurnPlayerId,
+      expiresAt: expiresAtISO,
     });
 
     io.to(session.sessionId).emit('turn-started', {
-      current_turn_player_id: session.currentTurnPlayerId,
-      expires_at: expiresAtISO,
+      currentTurnPlayerId: session.currentTurnPlayerId,
+      expiresAt: expiresAtISO,
     });
 
     session.turnTimerId = setTimeout(async () => {
@@ -48,7 +48,7 @@ function initializeSocket(io) {
       if (result.success) {
         io.to(result.session.sessionId).emit('move-applied', { 
             board: result.session.board, 
-            current_turn_player_id: result.nextTurnPlayerId 
+            currentTurnPlayerId: result.nextTurnPlayerId 
         });
         startTurn(result.session);
       }
@@ -59,30 +59,41 @@ function initializeSocket(io) {
 
     socket.on('join', async (data) => {
       try {
-        if (!data || !data.session_id || !data.playerId || !data.playerName) {
-          return socket.emit('join-error', { message: 'Invalid payload. Must include session_id, playerId, and playerName.' });
+        if (!data || !data.sessionId || !data.playerId || !data.playerName) {
+          return socket.emit('join-error', { message: 'Invalid payload. Must include sessionId, playerId, and playerName.' });
         }
 
-        const { session_id, playerId, playerName } = data;
-        const result = await addOrReconnectPlayer(session_id, playerId, playerName, socket.id);
+        const { sessionId, playerId, playerName } = data;
+        const session = getSession(sessionId);
+
+        if (!session) {
+            return socket.emit('join-error', { message: 'Session not found.' });
+        }
+
+        if (session.status !== 'pending') {
+            return socket.emit('join-error', { message: 'Session has already started.' });
+        }
+
+        const result = await addOrReconnectPlayer(sessionId, playerId, playerName, socket.id);
 
         if (!result.success) {
           return socket.emit('join-error', { message: result.error });
         }
 
-        const session = result.session;
         socket.join(session.sessionId);
 
         if (result.isReconnect) {
             io.to(session.sessionId).emit('player-reconnected', { playerId });
+        } else if (session.players.length < 2) {
+            io.to(session.sessionId).emit('waiting-for-player');
         }
         
         if (result.gameReady) {
           io.to(session.sessionId).emit('game-found', {
-            session_id: session.sessionId,
+            sessionId: session.sessionId,
             players: session.players.map(p => ({ playerId: p.playerId, playerName: p.playerName, symbol: p.symbol })),
             board: session.board,
-            turn_duration_sec: session.turnDurationSec,
+            turnDurationSec: session.turnDurationSec,
           });
           startTurn(session);
         }
@@ -95,12 +106,12 @@ function initializeSocket(io) {
 
     socket.on('make-move', async(data) => {
         try {
-            if (!data || !data.session_id || !data.playerId || data.position === undefined) {
+            if (!data || !data.sessionId || !data.playerId || data.position === undefined) {
                 return socket.emit('move-error', { message: 'Invalid move payload.' });
             }
-            const { session_id, playerId, position } = data;
+            const { sessionId, playerId, position } = data;
             
-            const result = await makeMove(session_id, playerId, position);
+            const result = await makeMove(sessionId, playerId, position);
 
             if (!result.success) {
                 return socket.emit('move-error', { message: result.error });
@@ -108,13 +119,13 @@ function initializeSocket(io) {
 
             if (result.gameEnded) {
                 if (result.payload) {
-                    io.to(session_id).emit('game-ended', result.payload);
+                    io.to(sessionId).emit('game-ended', result.payload);
                 }
             } else {
-                const session = getSession(session_id);
-                io.to(session_id).emit('move-applied', { 
+                const session = getSession(sessionId);
+                io.to(sessionId).emit('move-applied', { 
                     board: result.board, 
-                    current_turn_player_id: result.nextTurnPlayerId 
+                    currentTurnPlayerId: result.nextTurnPlayerId 
                 });
                 startTurn(session);
             }

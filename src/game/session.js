@@ -75,7 +75,7 @@ async function endSession(sessionId, clientReason, webhookWinState, winnerPlayer
     session.winState = webhookWinState;
     session.winnerPlayerId = winnerPlayerId;
 
-    sessionLogger.finalizeLog(session, { win_state: webhookWinState, winner_player_id: winnerPlayerId });
+    sessionLogger.finalizeLog(session, { winState: webhookWinState, winnerPlayerId: winnerPlayerId });
     _concludeAndCleanupSession(session);
 
     return { reason: clientReason, board: session.board };
@@ -146,8 +146,8 @@ async function addOrReconnectPlayer( sessionId, playerId, playerName, socketId) 
     existingPlayer.socketId = socketId;
     sessionsBySocket.set(socketId, sessionId);
 
-    sessionLogger.appendEvent(sessionId, 'player.reconnected', { player_id: playerId });
-    await dispatchEvent('player.reconnected', { player_id: playerId, status: 'reconnected' }, sessionId);
+    sessionLogger.appendEvent(sessionId, 'player.reconnected', { playerId: playerId });
+    await dispatchEvent('player.reconnected', { sessionId, playerId: playerId, status: 'reconnected' }, sessionId);
   } else {
     if (session.players.length >= 2 || session.status !== 'pending') {
       return { success: false, error: 'Session is full or has already started.' };
@@ -163,8 +163,8 @@ async function addOrReconnectPlayer( sessionId, playerId, playerName, socketId) 
     activePlayerIds.set(playerId, sessionId);
     sessionsBySocket.set(socketId, sessionId);
 
-    sessionLogger.appendEvent(sessionId, 'player.joined', { player_id: playerId, player_name: playerName });
-    await dispatchEvent('player.joined', { player_id: playerId, player_name: playerName, status: 'joined' }, sessionId);
+    sessionLogger.appendEvent(sessionId, 'player.joined', { playerId: playerId, playerName: playerName });
+    await dispatchEvent('player.joined', { sessionId, playerId: playerId, playerName: playerName, status: 'joined' }, sessionId);
 
     if (session.players.length === 2) {
       session.status = 'active';
@@ -194,7 +194,7 @@ async function makeMove(sessionId, playerId, position) {
   const player = session.players.find(p => p.playerId === playerId);
   session.board[position] = player.symbol;
 
-  sessionLogger.appendEvent(sessionId, 'move.made', { player_id: playerId, position });
+  sessionLogger.appendEvent(sessionId, 'move.made', { playerId: playerId, position });
 
   const winnerSymbol = checkForWinner(session.board);
   if (winnerSymbol) {
@@ -227,8 +227,8 @@ async function handleDisconnect(socketId) {
   player.socketId = null;
 
   if (session.status === 'active') {
-      sessionLogger.appendEvent(sessionId, 'player.disconnected', { player_id: player.playerId });
-      await dispatchEvent('player.disconnected', { player_id: player.playerId, status: 'disconnected' }, sessionId);
+      sessionLogger.appendEvent(sessionId, 'player.disconnected', { playerId: player.playerId });
+      await dispatchEvent('player.disconnected', { sessionId, playerId: player.playerId, status: 'disconnected' }, sessionId);
   }
 
   return { session, disconnectedPlayerId: player.playerId };
@@ -241,8 +241,8 @@ async function passTurn(sessionId) {
   }
 
   const timedOutPlayerId = session.currentTurnPlayerId;
-  sessionLogger.appendEvent(sessionId, 'player.turn_passed', { player_id: timedOutPlayerId });
-  await dispatchEvent('player.turn_passed', { player_id: timedOutPlayerId, reason: 'timeout' }, sessionId);
+  sessionLogger.appendEvent(sessionId, 'player.turn_passed', { playerId: timedOutPlayerId });
+  await dispatchEvent('player.turn_passed', { sessionId, playerId: timedOutPlayerId, reason: 'timeout' }, sessionId);
 
   const otherPlayer = session.players.find(p => p.playerId !== timedOutPlayerId);
   session.currentTurnPlayerId = otherPlayer.playerId;

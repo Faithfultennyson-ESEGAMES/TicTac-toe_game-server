@@ -17,21 +17,21 @@ let RETRY_SCHEDULE_MS = [];
 async function _moveToDlq(endpoint, event, reason, lastStatus, deliveryAttempts) {
   const dlqItemId = crypto.randomUUID();
   const dlqItem = {
-    dlq_item_id: dlqItemId,
-    failed_at: new Date().toISOString(),
+    dlqItemId: dlqItemId,
+    failedAt: new Date().toISOString(),
     reason: reason,
     endpoint: endpoint,
-    last_response_status: lastStatus,
-    delivery_attempts: deliveryAttempts,
-    webhook_payload: event,
+    lastResponseStatus: lastStatus,
+    deliveryAttempts: deliveryAttempts,
+    webhookPayload: event,
   };
 
   try {
     const filePath = path.join(DLQ_DIR, `${dlqItemId}.json`);
     await fs.writeFile(filePath, JSON.stringify(dlqItem, null, 2));
-    console.log(`[Dispatcher] Event ${event.event_id} moved to DLQ: ${dlqItemId}.json`);
+    console.log(`[Dispatcher] Event ${event.eventId} moved to DLQ: ${dlqItemId}.json`);
   } catch (error) {
-    console.error(`[Dispatcher] CRITICAL: Failed to write to DLQ directory for event ${event.event_id}:`, error);
+    console.error(`[Dispatcher] CRITICAL: Failed to write to DLQ directory for event ${event.eventId}:`, error);
   }
 }
 
@@ -44,13 +44,13 @@ async function _moveToDlq(endpoint, event, reason, lastStatus, deliveryAttempts)
  */
 async function _sendWithRetries(endpoint, event, attempt = 0, deliveryAttempts = []) {
   const body = JSON.stringify(event.body);
-  const signature = `sha256=${crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex')}`;
+  const signature = crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
 
   const headers = {
     'Content-Type': 'application/json',
-    'X-Event-Id': event.event_id,
-    'X-Event-Type': event.event_type,
-    'X-Signature': signature,
+    'X-Event-Id': event.eventId,
+    'X-Event-Type': event.eventType,
+    'X-Hub-Signature-256': signature,
   };
 
   let response = null;
@@ -68,22 +68,22 @@ async function _sendWithRetries(endpoint, event, attempt = 0, deliveryAttempts =
   }
 
   const attemptRecord = {
-    attempt_id: crypto.randomUUID(),
+    attemptId: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
-    status_code: response ? response.status : null,
+    statusCode: response ? response.status : null,
     error: error ? error.message : null,
   };
   deliveryAttempts.push(attemptRecord);
 
   // Success Case
   if (response && response.ok) { // 2xx status
-    console.log(`[Dispatcher] Event ${event.event_id} delivered successfully to ${endpoint}.`);
+    console.log(`[Dispatcher] Event ${event.eventId} delivered successfully to ${endpoint}.`);
     return;
   }
 
   // Permanent Failure Case
   if (response && response.status >= 400 && response.status < 500) {
-    console.warn(`[Dispatcher] Event ${event.event_id} failed permanently (4xx) for ${endpoint}. Moving to DLQ.`);
+    console.warn(`[Dispatcher] Event ${event.eventId} failed permanently (4xx) for ${endpoint}. Moving to DLQ.`);
     await _moveToDlq(endpoint, event, `Permanent failure with status ${response.status}`, response.status, deliveryAttempts);
     return;
   }
@@ -91,10 +91,10 @@ async function _sendWithRetries(endpoint, event, attempt = 0, deliveryAttempts =
   // Retryable Failure Case (5xx or network error)
   if (attempt + 1 < MAX_WEBHOOK_ATTEMPTS) {
     const delay = RETRY_SCHEDULE_MS[attempt] || 1000; // Fallback delay
-    console.log(`[Dispatcher] Event ${event.event_id} failed for ${endpoint} (Attempt ${attempt + 1}/${MAX_WEBHOOK_ATTEMPTS}). Retrying in ${delay}ms...`);
+    console.log(`[Dispatcher] Event ${event.eventId} failed for ${endpoint} (Attempt ${attempt + 1}/${MAX_WEBHOOK_ATTEMPTS}). Retrying in ${delay}ms...`);
     setTimeout(() => _sendWithRetries(endpoint, event, attempt + 1, deliveryAttempts), delay);
   } else {
-    console.error(`[Dispatcher] Event ${event.event_id} failed for ${endpoint} after ${MAX_WEBHOOK_ATTEMPTS} attempts. Moving to DLQ.`);
+    console.error(`[Dispatcher] Event ${event.eventId} failed for ${endpoint} after ${MAX_WEBHOOK_ATTEMPTS} attempts. Moving to DLQ.`);
     await _moveToDlq(endpoint, event, `Exhausted ${MAX_WEBHOOK_ATTEMPTS} retry attempts.`, response ? response.status : null, deliveryAttempts);
   }
 }
@@ -138,9 +138,9 @@ function dispatchEvent(eventType, payload, sessionId) {
   }
 
   const event = {
-    event_id: crypto.randomUUID(),
-    event_type: eventType,
-    session_id: sessionId,
+    eventId: crypto.randomUUID(),
+    eventType: eventType,
+    sessionId: sessionId,
     body: cleanPayload,
   };
 
@@ -156,20 +156,20 @@ function dispatchEvent(eventType, payload, sessionId) {
  * @returns {boolean} - True if the resend was successful.
  */
 async function resendDlqItem(dlqItem) {
-    if (!dlqItem || !dlqItem.endpoint || !dlqItem.webhook_payload) {
+    if (!dlqItem || !dlqItem.endpoint || !dlqItem.webhookPayload) {
         return false;
     }
 
     // A simple, single attempt to resend. No complex retries here.
     // If it fails again, it stays in the DLQ.
-    const event = dlqItem.webhook_payload;
+    const event = dlqItem.webhookPayload;
     const body = JSON.stringify(event.body);
-    const signature = `sha256=${crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex')}`;
+    const signature = crypto.createHmac('sha256', HMAC_SECRET).update(body).digest('hex');
     const headers = {
         'Content-Type': 'application/json',
-        'X-Event-Id': event.event_id,
-        'X-Event-Type': event.event_type,
-        'X-Signature': signature,
+        'X-Event-Id': event.eventId,
+        'X-Event-Type': event.eventType,
+        'X-Hub-Signature-256': signature,
     };
 
     try {
@@ -181,17 +181,17 @@ async function resendDlqItem(dlqItem) {
         });
 
         if (response.ok) {
-            console.log(`[Dispatcher] DLQ item ${dlqItem.dlq_item_id} successfully resent to ${dlqItem.endpoint}.`);
+            console.log(`[Dispatcher] DLQ item ${dlqItem.dlqItemId} successfully resent to ${dlqItem.endpoint}.`);
             // On success, delete the DLQ file
-            const filePath = path.join(DLQ_DIR, `${dlqItem.dlq_item_id}.json`);
+            const filePath = path.join(DLQ_DIR, `${dlqItem.dlqItemId}.json`);
             await fs.unlink(filePath);
             return true;
         } else {
-            console.warn(`[Dispatcher] DLQ item ${dlqItem.dlq_item_id} failed to resend with status ${response.status}.`);
+            console.warn(`[Dispatcher] DLQ item ${dlqItem.dlqItemId} failed to resend with status ${response.status}.`);
             return false;
         }
     } catch (error) {
-        console.error(`[Dispatcher] DLQ item ${dlqItem.dlq_item_id} failed to resend with network error:`, error.message);
+        console.error(`[Dispatcher] DLQ item ${dlqItem.dlqItemId} failed to resend with network error:`, error.message);
         return false;
     }
 }
