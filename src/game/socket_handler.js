@@ -2,6 +2,7 @@ require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env'
 const {
   addOrReconnectPlayer,
   makeMove,
+  relocateMove, // Import the new relocateMove function
   handleDisconnect,
   passTurn,
   getSession,
@@ -20,9 +21,10 @@ function initializeSocket(io) {
 
     clearTimeout(session.turnTimerId);
 
-    session.turnCount += 1;
+    // The turn count is now incremented inside makeMove and relocateMove
+    // to prevent it from incrementing on passTurn.
 
-    if (session.turnCount > MAX_TURNS) {
+    if (session.turnCount >= MAX_TURNS) {
         const payload = await endSession(session.sessionId, 'draw', 'draw', null);
         if (payload) {
             io.to(session.sessionId).emit('game-ended', payload);
@@ -46,11 +48,15 @@ function initializeSocket(io) {
     session.turnTimerId = setTimeout(async () => {
       const result = await passTurn(session.sessionId);
       if (result.success) {
-        io.to(result.session.sessionId).emit('move-applied', { 
-            board: result.session.board, 
-            currentTurnPlayerId: result.nextTurnPlayerId 
-        });
-        startTurn(result.session);
+          if (result.gameEnded) {
+            io.to(session.sessionId).emit('game-ended', result.payload);
+          } else {
+            io.to(result.session.sessionId).emit('move-applied', { 
+                board: result.session.board, 
+                currentTurnPlayerId: result.nextTurnPlayerId 
+            });
+            startTurn(result.session);
+          }
       }
     }, session.turnDurationSec * 1000);
   };
@@ -64,38 +70,31 @@ function initializeSocket(io) {
         }
 
         const { sessionId, playerId, playerName } = data;
-        const session = getSession(sessionId);
-
-        if (!session) {
-            return socket.emit('join-error', { message: 'Session not found.' });
-        }
-
-        if (session.status !== 'pending') {
-            return socket.emit('join-error', { message: 'Session has already started.' });
-        }
-
         const result = await addOrReconnectPlayer(sessionId, playerId, playerName, socket.id);
 
         if (!result.success) {
           return socket.emit('join-error', { message: result.error });
         }
 
-        socket.join(session.sessionId);
+        socket.join(sessionId);
+
+        const { session } = result;
 
         if (result.isReconnect) {
-            io.to(session.sessionId).emit('player-reconnected', { playerId });
-        } else if (session.players.length < 2) {
-            io.to(session.sessionId).emit('waiting-for-player');
+            io.to(sessionId).emit('player-reconnected', { playerId });
         }
         
         if (result.gameReady) {
-          io.to(session.sessionId).emit('game-found', {
+          io.to(sessionId).emit('game-found', {
             sessionId: session.sessionId,
             players: session.players.map(p => ({ playerId: p.playerId, playerName: p.playerName, symbol: p.symbol })),
             board: session.board,
             turnDurationSec: session.turnDurationSec,
+            currentTurnPlayerId: session.currentTurnPlayerId,
           });
           startTurn(session);
+        } else if (session.status === 'pending') {
+             io.to(sessionId).emit('waiting-for-player');
         }
 
       } catch (error) {
@@ -131,6 +130,37 @@ function initializeSocket(io) {
             }
         } catch (error) {
             console.error(`[Socket Handler] Error on make-move event:`, error);
+            socket.emit('move-error', { message: 'An internal server error occurred.' });
+        }
+    });
+    
+    socket.on('relocate-move', async(data) => {
+        try {
+            if (!data || !data.sessionId || !data.playerId || data.from === undefined || data.to === undefined) {
+                return socket.emit('move-error', { message: 'Invalid relocate payload.' });
+            }
+            const { sessionId, playerId, from, to } = data;
+            
+            const result = await relocateMove(sessionId, playerId, from, to);
+
+            if (!result.success) {
+                return socket.emit('move-error', { message: result.error });
+            }
+
+            if (result.gameEnded) {
+                if (result.payload) {
+                    io.to(sessionId).emit('game-ended', result.payload);
+                }
+            } else {
+                const session = getSession(sessionId);
+                io.to(sessionId).emit('move-applied', { 
+                    board: result.board, 
+                    currentTurnPlayerId: result.nextTurnPlayerId 
+                });
+                startTurn(session);
+            }
+        } catch (error) {
+            console.error(`[Socket Handler] Error on relocate-move event:`, error);
             socket.emit('move-error', { message: 'An internal server error occurred.' });
         }
     });

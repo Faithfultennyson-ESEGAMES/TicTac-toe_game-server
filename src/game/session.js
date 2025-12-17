@@ -1,7 +1,7 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
 const crypto = require('crypto');
 const { dispatchEvent } = require('../webhooks/dispatcher');
-const { checkForWinner, isBoardFull } = require('./game_logic');
+const { checkForWinner } = require('./game_logic');
 const sessionLogger = require('../logging/session_logger');
 const { notifySessionClosed } = require('../webhooks/matchmaking_notifier');
 
@@ -13,6 +13,7 @@ const sessionsBySocket = new Map(); // socketId -> sessionId
 // Use environment variables for configuration with sane defaults
 const SESSION_MAX_LIFETIME_MS = parseInt(process.env.SESSION_MAX_LIFETIME_MS, 10) || 3600000; // Default 1 hour
 const SESSION_CLEANUP_INTERVAL_MS = 300000; // 5 minutes
+const MAX_TURNS = parseInt(process.env.MAX_TURNS, 10) || 12;
 
 // --- Private Functions ---
 
@@ -188,11 +189,18 @@ async function makeMove(sessionId, playerId, position) {
     return { success: false, error: 'Invalid move.' };
   }
 
+  const player = session.players.find(p => p.playerId === playerId);
+  const symbolCount = session.board.filter(s => s === player.symbol).length;
+
+  if (symbolCount >= 3) {
+    return { success: false, error: 'You have placed all your symbols. You must relocate one.' };
+  }
+
   clearTimeout(session.turnTimerId);
   session.turnTimerId = null;
 
-  const player = session.players.find(p => p.playerId === playerId);
   session.board[position] = player.symbol;
+  session.turnCount++;
 
   sessionLogger.appendEvent(sessionId, 'move.made', { playerId: playerId, position });
 
@@ -203,7 +211,7 @@ async function makeMove(sessionId, playerId, position) {
     return { success: true, gameEnded: true, payload };
   }
 
-  if (isBoardFull(session.board)) {
+  if (session.turnCount >= MAX_TURNS) {
     const payload = await endSession(sessionId, 'draw', 'draw', null);
     return { success: true, gameEnded: true, payload };
   }
@@ -212,6 +220,62 @@ async function makeMove(sessionId, playerId, position) {
   session.currentTurnPlayerId = otherPlayer.playerId;
   return { success: true, gameEnded: false, board: session.board, nextTurnPlayerId: session.currentTurnPlayerId };
 }
+
+async function relocateMove(sessionId, playerId, from, to) {
+    const session = getSession(sessionId);
+
+    if (!session || session.status !== 'active') {
+        return { success: false, error: 'Session not active.' };
+    }
+    if (playerId !== session.currentTurnPlayerId) {
+        return { success: false, error: 'Not your turn.' };
+    }
+    const player = session.players.find(p => p.playerId === playerId);
+    if (!player) {
+        return { success: false, error: 'Player not in session.' };
+    }
+
+    if (from < 0 || from > 8 || to < 0 || to > 8) {
+        return { success: false, error: 'Invalid move coordinates.' };
+    }
+    if (session.board[from] !== player.symbol) {
+        return { success: false, error: 'The "from" position does not contain your symbol.' };
+    }
+    if (session.board[to] !== null) {
+        return { success: false, error: 'The "to" position is already occupied.' };
+    }
+    
+    const symbolCount = session.board.filter(s => s === player.symbol).length;
+    if (symbolCount < 3) {
+      return { success: false, error: 'You must place all your symbols before you can relocate.' };
+    }
+
+    clearTimeout(session.turnTimerId);
+    session.turnTimerId = null;
+
+    session.board[from] = null;
+    session.board[to] = player.symbol;
+    session.turnCount++;
+
+    sessionLogger.appendEvent(sessionId, 'move.relocated', { playerId, from, to });
+
+    const winnerSymbol = checkForWinner(session.board);
+    if (winnerSymbol) {
+        const winner = session.players.find(p => p.symbol === winnerSymbol);
+        const payload = await endSession(sessionId, 'win', 'win', winner.playerId);
+        return { success: true, gameEnded: true, payload };
+    }
+
+    if (session.turnCount >= MAX_TURNS) {
+        const payload = await endSession(sessionId, 'draw', 'draw', null);
+        return { success: true, gameEnded: true, payload };
+    }
+
+    const otherPlayer = session.players.find(p => p.playerId !== playerId);
+    session.currentTurnPlayerId = otherPlayer.playerId;
+    return { success: true, gameEnded: false, board: session.board, nextTurnPlayerId: session.currentTurnPlayerId };
+}
+
 
 async function handleDisconnect(socketId) {
   const sessionId = sessionsBySocket.get(socketId);
@@ -240,14 +304,21 @@ async function passTurn(sessionId) {
     return { success: false };
   }
 
+  session.turnCount++;
+
   const timedOutPlayerId = session.currentTurnPlayerId;
   sessionLogger.appendEvent(sessionId, 'player.turn_passed', { playerId: timedOutPlayerId });
   await dispatchEvent('player.turn_passed', { sessionId, playerId: timedOutPlayerId, reason: 'timeout' }, sessionId);
 
+  if (session.turnCount >= MAX_TURNS) {
+    const payload = await endSession(sessionId, 'draw', 'draw', null);
+    return { success: true, gameEnded: true, payload };
+  }
+
   const otherPlayer = session.players.find(p => p.playerId !== timedOutPlayerId);
   session.currentTurnPlayerId = otherPlayer.playerId;
 
-  return { success: true, session, nextTurnPlayerId: session.currentTurnPlayerId };
+  return { success: true, gameEnded: false, session, nextTurnPlayerId: session.currentTurnPlayerId };
 }
 
 module.exports = {
@@ -257,6 +328,7 @@ module.exports = {
   getAllActiveSessions,
   addOrReconnectPlayer,
   makeMove,
+  relocateMove,
   handleDisconnect,
   passTurn,
   endSession,

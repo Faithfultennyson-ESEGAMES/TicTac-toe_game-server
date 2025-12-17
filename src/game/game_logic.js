@@ -15,11 +15,6 @@ function checkForWinner(board) {
   return null;
 }
 
-function isBoardFull(board) {
-  return board.every(cell => cell !== null);
-}
-
 module.exports = {
   checkForWinner,
-  isBoardFull,
 };
