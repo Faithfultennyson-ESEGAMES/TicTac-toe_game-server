@@ -2,7 +2,7 @@ require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env'
 const {
   addOrReconnectPlayer,
   makeMove,
-  relocateMove, // Import the new relocateMove function
+  relocateMove,
   handleDisconnect,
   passTurn,
   getSession,
@@ -21,12 +21,10 @@ function initializeSocket(io) {
 
     clearTimeout(session.turnTimerId);
 
-    // The turn count is now incremented inside makeMove and relocateMove
-    // to prevent it from incrementing on passTurn.
-
     if (session.turnCount >= MAX_TURNS) {
         const payload = await endSession(session.sessionId, 'draw', 'draw', null);
         if (payload) {
+            io.to(session.sessionId).emit('move-applied', { board: payload.board, currentTurnPlayerId: null });
             io.to(session.sessionId).emit('game-ended', payload);
         }
         return;
@@ -49,6 +47,7 @@ function initializeSocket(io) {
       const result = await passTurn(session.sessionId);
       if (result.success) {
           if (result.gameEnded) {
+            io.to(session.sessionId).emit('move-applied', { board: result.payload.board, currentTurnPlayerId: null });
             io.to(session.sessionId).emit('game-ended', result.payload);
           } else {
             io.to(result.session.sessionId).emit('move-applied', { 
@@ -117,15 +116,14 @@ function initializeSocket(io) {
             }
 
             if (result.gameEnded) {
-                if (result.payload) {
-                    io.to(sessionId).emit('game-ended', result.payload);
-                }
+                io.to(sessionId).emit('move-applied', { board: result.payload.board, currentTurnPlayerId: null });
+                io.to(sessionId).emit('game-ended', result.payload);
             } else {
-                const session = getSession(sessionId);
                 io.to(sessionId).emit('move-applied', { 
                     board: result.board, 
                     currentTurnPlayerId: result.nextTurnPlayerId 
                 });
+                const session = getSession(sessionId);
                 startTurn(session);
             }
         } catch (error) {
@@ -148,15 +146,14 @@ function initializeSocket(io) {
             }
 
             if (result.gameEnded) {
-                if (result.payload) {
-                    io.to(sessionId).emit('game-ended', result.payload);
-                }
+                io.to(sessionId).emit('move-applied', { board: result.payload.board, currentTurnPlayerId: null });
+                io.to(sessionId).emit('game-ended', result.payload);
             } else {
-                const session = getSession(sessionId);
                 io.to(sessionId).emit('move-applied', { 
                     board: result.board, 
                     currentTurnPlayerId: result.nextTurnPlayerId 
                 });
+                const session = getSession(sessionId);
                 startTurn(session);
             }
         } catch (error) {
