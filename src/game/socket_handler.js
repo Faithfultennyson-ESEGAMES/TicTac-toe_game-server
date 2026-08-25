@@ -62,6 +62,13 @@ function initializeSocket(io) {
 
   io.on('connection', (socket) => {
 
+    // Clock-sync: client sends its own timestamp, server acks back with its
+    // own Date.now(). Client uses the round trip to compute a clockOffsetMs
+    // so turn-timer countdowns aren't skewed by a wrong device clock.
+    socket.on('time-sync', (clientSentAt, callback) => {
+      if (typeof callback === 'function') callback(Date.now());
+    });
+
     socket.on('join', async (data) => {
       try {
         if (!data || !data.sessionId || !data.playerId || !data.playerName) {
